@@ -109,6 +109,9 @@ status_html = (
 )
 st.sidebar.markdown(status_html, unsafe_allow_html=True)
 st.sidebar.markdown("---")
+
+
+
 with st.sidebar.expander("🎛️ Глобальные фильтры", expanded=False):
 
     g_campus = st.multiselect(
@@ -141,6 +144,33 @@ with st.sidebar.expander("🎛️ Глобальные фильтры", expanded
         key="g_category",
         format_func=lambda x: f"{x} ({cat_counts.get(x,0)})"
     )
+st.sidebar.markdown("---")
+# ── Системные метрики бота ────────────────────────────────────────────
+# 1) выборка последних 100 запросов
+last_100 = df_base.head(100)                # df_base уже отфильтрован по датам
+
+# 2) расчёты
+avg_rt  = last_100.response_time.mean()
+p95_rt  = last_100.response_time.quantile(0.95)
+unique_24h = df_base[
+    df_base.timestamp >= datetime.utcnow() - timedelta(hours=24)
+]["user_id"].nunique()
+
+# 3) вывод в сайдбаре
+st.sidebar.subheader("⚙️ Системные метрики")
+st.sidebar.metric(
+    "⏱ Среднее время ответа (посл. 100)",
+    f"{avg_rt:.2f} сек" if not pd.isna(avg_rt) else "—"
+)
+st.sidebar.metric(
+    "🚀 P95 времени ответа",
+    f"{p95_rt:.2f} сек" if not pd.isna(p95_rt) else "—"
+)
+st.sidebar.metric(
+    "👥 Уникальных пользователей (24 ч)",
+    unique_24h
+)
+st.sidebar.markdown("---")
 
 
 # применяем глобальные фильтры
