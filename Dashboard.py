@@ -6,6 +6,8 @@ import plotly.express as px, altair as alt
 from streamlit_autorefresh import st_autorefresh
 from datetime import datetime, timedelta
 
+MIN_N     = 1      # минимальное количество ответов в сегменте
+THR       = 0.10   # доля дизлайков, начиная с которой бьём тревогу (40 %)
 
 st.set_page_config(page_title="Bot Dashboard", layout="wide")
 st.title("📊 Дашборд чат-бота")
@@ -222,6 +224,33 @@ else:
 
 st.markdown("---")
 
+# ── 🛑 Предупреждения о частых дизлайках (SIDEBAR) ────────────────────
+
+
+warn_df = df_base.copy()               # период
+agg = (warn_df
+       .groupby(["campus", "education_level", "education_type"])
+       .agg(total=("user_feedback", "size"),
+            neg  =("user_feedback", lambda s: (s == -1).sum()))
+       .reset_index())
+agg["ratio"] = agg.neg / agg.total
+alerts = agg[(agg.total >= MIN_N) & (agg.ratio >= THR)]
+
+if not alerts.empty:
+    st.sidebar.subheader("🛑 Частые негативные оценки")
+
+    # кнопки: клик → выбранный сегмент кладём в session_state
+    for i, r in alerts.iterrows():
+        seg = dict(campus=r.campus,
+                   level=r.education_level,
+                   ed_type=r.education_type)
+        label = (f"⚠ {seg['campus'] or '—'} | {seg['level'] or '—'} | "
+                 f"{seg['ed_type'] or '—'} "
+                 f"— {int(r.neg)}/{int(r.total)} ({r.ratio:.0%})")
+        if st.sidebar.button(label, key=f"alert_btn_{i}"):
+            st.session_state["alert_sidebar"] = seg
+    st.sidebar.markdown("---")
+
 # ── 1. Динамика запросов / время генерации ───────────────────────────—
 st.subheader("Динамика запросов / время генерации")
 dyn_df = apply_filters(df_master.copy(), "dyn", disabled=master_active)
@@ -307,6 +336,36 @@ sc = alt.Chart(sc_df).mark_circle(size=60).encode(
 ).interactive()
 st.altair_chart(sc, use_container_width=True)
 
+if "alert_sidebar" in st.session_state:
+    seg = st.session_state["alert_sidebar"]
+
+    sd_df = df_base[
+        (df_base.campus == seg["campus"]) &
+        (df_base.education_level == seg["level"]) &
+        (df_base.education_type == seg["ed_type"]) &
+        (df_base.user_feedback == -1)
+    ].copy()
+
+    if sd_df.empty:
+        st.sidebar.info("Диалогов не найдено.")
+    else:
+        st.sidebar.subheader(
+            f"🔍 Диалоги: {seg['campus'] or '—'} | "
+            f"{seg['level'] or '—'} | {seg['ed_type'] or '—'}"
+        )
+
+        # выводим каждый диалог полностью
+        for _, row in sd_df.iterrows():
+            label = f"{row.timestamp} | User {row.user_id}"
+            with st.sidebar.expander(label, expanded=False):
+                st.markdown(f"**Вопрос:**\n\n{row.question}")
+                st.markdown(f"**Ответ:**\n\n{row.answer}")
+
+    # кнопка «Скрыть»
+    if st.sidebar.button("Скрыть", key="hide_alert_sidebar"):
+        st.session_state.pop("alert_sidebar")
+        st.rerun()
+
 # ── последние 5 диалогов (без локальных фильтров) ─────────────────────
 st.markdown("---")
 st.subheader("Последние 5 диалогов")
@@ -325,25 +384,49 @@ for _, row in df_base.head(5).iterrows():          # df_base — только ф
     if tags: st.write("Метки: " + " · ".join(tags))
     st.markdown("---")
 
-# ── диалоги с негативной оценкой (с локальными фильтрами) ──────────────
+
+
+# ── диалоги с негативной оценкой ───────────────────────────────────────
 st.subheader("Диалоги с негативной оценкой")
-neg_base = apply_filters(df_master.copy(), "neg",
-                         with_category=True,
-                         disabled=master_active)
+
+neg_base = apply_filters(
+    df_master.copy(),
+    "neg",
+    with_category=True,
+    disabled=master_active
+)
 neg_df = neg_base[neg_base.user_feedback < 0]
 
-# метрика «Негатив / все» для текущих фильтров
+# метрика «негатив / все»
 ratio = 0 if len(neg_base) == 0 else len(neg_df) / len(neg_base)
 st.metric("Негатив / все", f"{ratio:.1%}")
 
-# вывод самих диалогов
+# ── выбор количества выводимых диалогов ───────────────────────────────
 if neg_df.empty:
     st.info("Нет диалогов с негативной оценкой для выбранных фильтров.")
 else:
+    max_n = len(neg_df)
+
+    # показываем слайдер только если записей больше одной
+    if max_n > 1:
+        n_show = st.slider(
+            "Сколько диалогов показать:",
+            min_value=1,
+            max_value=max_n,
+            value=min(10, max_n),
+            key="neg_limit"
+        )
+    else:
+        n_show = 1   # единственная запись
+
+    neg_df = neg_df.head(n_show)
+
+    # вывод диалогов
     for _, row in neg_df.iterrows():
         campus = row.campus if pd.notna(row.campus) else "—"
         level  = row.education_level if pd.notna(row.education_level) else "—"
         edu_t  = row.education_type if pd.notna(row.education_type) else "—"
+
         st.write(f"**{row.timestamp}** | User `{row.user_id}` | {campus}, {level}, {edu_t}")
         st.write(f"Q: {row.question}")
         st.write(f"A: {row.answer}")
